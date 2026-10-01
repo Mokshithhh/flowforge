@@ -1,0 +1,87 @@
+x-backend-environment: &backend-environment
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-workflow}:${POSTGRES_PASSWORD:-workflow}@postgres:5432/${POSTGRES_DB:-workflow}
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:-local-only-insecure-secret}
+  CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_SENDER: ${SMTP_SENDER:-}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+  EXECUTION_TIMEOUT_SECONDS: ${EXECUTION_TIMEOUT_SECONDS:-300}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-workflow}
+      POSTGRES_USER: ${POSTGRES_USER:-workflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-workflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-workflow} -d ${POSTGRES_DB:-workflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      <<: *backend-environment
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./apps/api
+    command: celery -A app.tasks.celery_app worker --loglevel=INFO
+    environment:
+      <<: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./apps/api
+    command: celery -A app.tasks.celery_app beat --loglevel=INFO
+    environment:
+      <<: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8001
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
